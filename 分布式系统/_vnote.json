@@ -1,0 +1,27 @@
+{
+    "created_time": "2019-10-16T09:27:45Z",
+    "files": [
+        {
+            "attachment_folder": "",
+            "attachments": [
+            ],
+            "created_time": "2019-10-16T09:28:08Z",
+            "modified_time": "2020-03-19T08:40:46Z",
+            "name": "分布式系统基础知识.md",
+            "tags": [
+            ]
+        }
+    ],
+    "sub_directories": [
+        {
+            "name": "Hadoop权威指南"
+        },
+        {
+            "name": "Hadoop"
+        },
+        {
+            "name": "Pulsar"
+        }
+    ],
+    "version": "1"
+}

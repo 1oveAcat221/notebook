@@ -1,0 +1,41 @@
+vnote_backup_file_826537664 C:/Users/1oveACat/OneDrive/笔记/Golang/Golang/内存管理.md
+[TOC]
+
+## 1. tcmalloc
+### 1.1 tcmalloc是什么
+thread-caching malloc，Golang的内存管理是在tcmalloc的基础上进行了一些改进。tcmalloc是google推出的一种内存分配器，常见的分配器还有glibc的ptmalloc和google的jemalloc。相比于ptmalloc，tcmalloc的性能更好，适用于高并发场景。
+
+### 1.2 tcmalloc分配策略
+tcmalloc主要从两个地方分配内存：
+- 进程私有缓存
+对于一些小容量的内存申请（小于32KB）会使用私有缓存，当私有缓存不足时会从全局缓存申请一部分作为私有缓存
+- 全局缓存堆
+大容量的内存申请从全局缓存中申请
+
+**Small Object Allocation**
+**Big Object Allocation**
+
+**Span**
+tcmalloc使用span管理内存分页，一个span可以包含几个连续分页，span的状态有以下三种：
+- 未分配
+- 作为大对象分配
+- 作为小对象分配
+
+## 2. Golang内存管理
+### 2.1 准备知识
+Golang中的三个基本概念：  
+- G：Goroutine执行的上下文环境
+- M：操作系统线程
+- P：Processer，调度器，等同于CPU
+
+一个Goroutine的运行需要三部分结合起来。
+
+### 2.2 逃逸分析
+分配内存时，编译器会根据变量在函数返回后是否继续被引用决定将变量分配在堆上还是栈上。
+并且如果一个局部变量很大，则它会被分配到堆上。
+
+### 2.3 关键数据结构
+- mcache：per-P cache
+- mcentral：全局cache，mcache不够用的时候向mcentral申请
+- mheap：当mcentral不够用的时候通过mheap向操作系统申请
+

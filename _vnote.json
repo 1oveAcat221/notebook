@@ -1,0 +1,48 @@
+{
+    "attachment_folder": "_v_attachments",
+    "created_time": "2019-07-29T10:36:05Z",
+    "files": [
+        {
+            "attachment_folder": "",
+            "attachments": [
+            ],
+            "created_time": "2019-07-29T10:36:11Z",
+            "modified_time": "2019-07-29T13:19:59Z",
+            "name": "NIO技术.md",
+            "tags": [
+            ]
+        }
+    ],
+    "image_folder": "",
+    "recycle_bin_folder": "_v_recycle_bin",
+    "sub_directories": [
+        {
+            "name": "操作系统"
+        },
+        {
+            "name": "面经"
+        },
+        {
+            "name": "Golang"
+        },
+        {
+            "name": "分布式系统"
+        },
+        {
+            "name": "Java"
+        },
+        {
+            "name": "设计模式"
+        },
+        {
+            "name": "每周分享"
+        }
+    ],
+    "tags": [
+        "Golang",
+        "内存管理",
+        "垃圾回收",
+        "Java"
+    ],
+    "version": "1"
+}

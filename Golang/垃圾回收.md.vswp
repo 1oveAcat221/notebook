@@ -1,0 +1,125 @@
+vnote_backup_file_826537664 C:/Users/1oveACat/OneDrive/笔记/Golang/Golang/垃圾回收.md
+[TOC]
+
+## 1. GC发展
+- v1.1 STW
+- v1.3 Mark STW，Sweep并行
+- v1.5 三色标记法
+- v1.8 hybrid write barrier
+
+## 2. GC算法
+### 2.1 引用计数
+引用计数的思想非常简单：每个单元维护一个域，保存其它单元指向它的引用数量（类似有向图的入度）。当引用数量为 0 时，将其回收。引用计数是渐进式的，能够将内存管理的开销分布到整个程序之中。C++ 的`share_ptr`使用的就是引用计算方法。
+
+**优点：**
+   1. 渐进式：内存管理与用户程序的执行交织在一起，将GC的代价分散到整个程序，不需要STW（Stop The World）。
+   2. 算法容易实现。
+   3. 内存单元能实时回收。其他垃圾回收算法需要达到某些条件才会触发。
+
+**缺点：**
+   1. 原始的引用计数不能处理循环引用。
+   2. 维护引用计数降低运行效率。
+   3. 单元池`free list`的实现*缓存不友好*。
+
+### 2.2 标记-清扫
+基于追踪的垃圾收集算法。算法思想在 70 年代就提出了，是一种非常古老的算法。内存单元并不会在变成垃圾立刻回收，而是保持不可达状态，直到到达某个阈值或者固定时间长度。这个时候系统会挂起用户程序，也就是 STW，转而执行垃圾回收程序。垃圾回收程序对所有的存活单元进行一次全局遍历确定哪些单元可以回收。算法分两个部分：标记（mark）和清扫（sweep）。标记阶段表明所有的存活单元，清扫阶段将垃圾单元回收。
+
+**优点：**
+   1. 避免了引用计数的缺点
+
+**缺点：**
+   1. 需要STW
+
+#### 三色标记法
+三色标记法是对**标记阶段**的改进，原理如下：
+   1. 起初所有对象都是白色
+   2. 从根出发扫描所有可达对象，标记为灰色，放入待处理队列
+   3. 从队列取出灰色对象，将其引用的对象标记为灰色放入队列，自身标记为黑色
+   4. 重复`3`，直到灰色对象队列为空，此时白色对象为垃圾，回收即可
+
+**优点：**
+    能让用户程序和mark程序并发执行。
+
+> 可以参考论文：《On-the-fly garbage collection: an exercise in cooperation.》
+
+### 2.3 节点复制
+基于追踪的垃圾回收算法。将整个堆分为两个半区（semi-space），一个包含现有数据，另一个包含已废弃的数据。收集器在老的半区（Fromspace）遍历存活的对象，并将其复制到新半区（Tospace）。回收整个Fromspace。
+
+**优点：**
+   1. 没有内存碎片
+   2. 分配内存可以简单地通过递增自由空间指针来实现
+
+**缺点：**
+   1. 内存得不到充分利用
+
+### 2.4 分代收集
+基于追踪的垃圾回收算法（标记-清扫、节点复制）的一个主要问题是在生命周期较长的对象上浪费时间（长生命周期的对象是不需要频繁扫描的）。同时大部分对象生命周期较短。基于上述两点，分代垃圾回收算法将对象按生命周期长短存放到堆上的若干区域，这些区域就是分代（generation）。
+
+分配时从新生代里面分配，如果对象经历了多个回收周期仍存活则晋升到老年代（promote），收集主要集中在新生代，STW时间更短，效率更高。
+
+**优点：**
+   1. 性能好
+
+**缺点：**
+   1. 实现复杂
+
+## 3. Golang GC
+### 3.1 GC条件
+- 自动GC：在堆上分配大于32KB的对象时检查是否满足GC条件
+- 主动GC：`runtime.GC()`，阻塞调用
+- 强制GC：如果超过两分钟没有GC，则触发GC。监控函数是`sysmon()`，在主goroutine中启动
+
+### 3.2 GC流程
+Golang中使用三色标记法。
+
+准备阶段（STW） -> 并发标记 -> 重新标记（STW） -> 并行清理
+
+#### 3.2.1 准备阶段
+```
+func gcStart(mode gcMode, forceTrigger bool) {
+    ...
+    //在后台启动 mark worker 
+    if mode == gcBackgroundMode {
+        gcBgMarkStartWorkers()
+    }
+    ...
+    // Stop The World
+    systemstack(stopTheWorldWithSema)
+    ...
+    if mode == gcBackgroundMode {
+        // GC 开始前的准备工作
+
+        //处理设置 GCPhase，setGCPhase 还会 enable write barrier
+        setGCPhase(_GCmark)
+      	
+        gcBgMarkPrepare() // Must happen before assist enable.
+        gcMarkRootPrepare()
+
+        // Mark all active tinyalloc blocks. Since we're
+        // allocating from these, they need to be black like
+        // other allocations. The alternative is to blacken
+        // the tiny block on every allocation from it, which
+        // would slow down the tiny allocator.
+        gcMarkTinyAllocs()
+      	
+        // Start The World
+        systemstack(startTheWorldWithSema)
+    } else {
+        ...
+    }
+}
+```
+`gcBackgroundMode`模式下主要做了：
+   1. 后台启动mark worker
+   2. Stop The World
+   3. 设置GCPhase，同时启用写屏障
+   4. `gcMarkTinyAllocs()`
+   5. Start the World
+
+#### 3.2.2 Mark阶段
+多个mark worker并行执行，mark worker从灰色队列中取出对象标记为黑色，并将其引用的对象标记为灰色加入队列。
+
+#### 3.2.3 Mark termination
+首先stop the world，
+
+#### 3.2.4 清扫

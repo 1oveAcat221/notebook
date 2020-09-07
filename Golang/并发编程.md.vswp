@@ -1,0 +1,335 @@
+vnote_backup_file_826537664 C:/Users/1oveACat/OneDrive/笔记/计算机/Golang/并发编程.md
+[TOC] 
+ 
+## 竞态
+**例子**：
+```
+var x []int
+go func() {x = make([]int, 10)}
+go func() {x = make([]int, 1000000)}
+x[999999] = 1
+```
+最后一个表达式中 `x` 的值时未定义的，它可能时nil、一个长度为10的slice或者一个长度为1000000的slice，或者两个make调用的结合，一个名义上拥有1000000个元素但底层数组只有10个元素的slice。
+ 
+**竞态的定义：**数据竞态发生于两个goroutine并发读写同一个变量并且至少其中一个是写入时。  
+**三种方法*避免*数据竞态：**
+ 
+1. 不要修改变量
+    在运行前初始化变量，并在运行时不修改。
+2. 避免多个goroutine访问同一个变量
+ 
+    > “不要通过共享内存来通信，应该通过通信来共享内存。”
+ 
+    使用通道请求来代理一个受限变量的所有访问的goroutine称为**变量的监控goroutine（monitor goroutine）**。即使一个变量无法在整个生命周期受限于单个goroutine，加以限制任然可用是解决并发访问的好方法。例如可以通过借助通道来把共享变量的地址从上一步传到下一步，从而在流水线上的多个goroutine之间共享该变量。在把变量传给下一步之后就不再访问该变量了，因此变量的访问是串行的。
+ 
+3. 互斥机制
+ 
+## 互斥锁：`sync.Mutex`
+```
+package bank2
+ 
+var (
+    sema        = make(chan struct{}, 1)    //计数上限为1的信号量称为二进制信号量（binary semaphore）
+    balance     int
+)
+ 
+func Deposit(amount int) {
+    sema <- struct{}{}      //获取令牌
+    balance += amount
+    <- sema                 //释放令牌
+}
+ 
+func Balance() int {
+    sema <- struct{}{}
+    b := balance
+    <-sema
+    return b
+}
+```
+使用`sync.Mutex`实现
+```
+package bank3
+ 
+import "sync"
+ 
+var (
+    mu      sync.Mutex
+    balance int
+)
+ 
+func Deposit(amount int) {
+    mu.Lock()
+    balance += amount
+    mu.Unlock()
+}
+ 
+func Balance() int {
+    mu.Lock()
+    b := balance
+    mu.Unlock()
+    return b
+}
+ 
+```
+这种函数、互斥锁、变量组合的方式称为**监控（monitor）模式**。与之前的**监控goroutine**相同，都代表使用一个代理人（broker）来确保变量按顺序访问。
+ 
+> defer的执行成本比显式调用Unlock要大一些，但不足以成为代码不清晰的理由。在处理并发程序时，永远应当优先考虑清晰度，并拒绝过早优化。在可以使用的地方，就尽量使用defer来让临界区域扩展到函数结尾处。
+ 
+```
+func Withdraw(amount int) bool {
+    Deposit(-amount)
+    if Balance() < 0 {
+        Deposit(amount)
+        return false
+    }
+    return true
+}
+```
+以上代码能最终返回正确的结果，但在尝试超额取款时，余额会降低到0以下，导致同时发生的小额取款被拒绝。Withdraw应当是一个原子操作，而不是由三个原子操作组成的串行操作。
+```
+func Withdraw(amount int) {
+    mu.Lock()
+    defer mu.Unlock()
+    Deposit(-amount)
+    if Balance() < 0 {
+        Deposit(amount)
+        return false
+    }
+    return true
+}
+```
+由于**互斥锁是不可再入的**，因此会导致死锁，Withdraw会一直卡住。
+ 
+> Go语言的互斥量是不可再入的，互斥量的目的是在程序执行过程中维持基于共享变量的特定不变量（invariant）。其中一个不变量是” 没有goroutine正在访问这个共享变量“ ，但有可能互斥量也保护针对数据结构的其他不变量。当goroutine获取一个互斥锁的时候，它可能会假定这些不变量是满足的。当它获取到互斥锁之后，它可能会更新共享变量的值，这样可能会临时不满足之前的不变量。尽管可重入的互斥量可以确保没有其他goroutin可以访问共享变量，但无法保护这些变量的其他不变量。
+ 
+一个解决方案是，将函数拆分为两部分：一个不导出的函数和一个导出的函数，不导出的函数实现业务逻辑，导出的函数获取锁调用不导出的函数。
+ 
+## 读写互斥锁：`sync.RWMutex`
+仅在绝大部分goroutine都在获取读锁并且锁竞争比较激烈时（即，goroutine一般都需要等待后才能获得锁）RWMutex才有优势。因为RWMutex需要更复杂的内部簿记工作，所以在竞争不激烈时它比普通的互斥锁慢。
+ 
+## 内存同步
+现代的计算机一般都有多个处理器，每个处理器都有内存的本地缓存。为了提高效率，对内存的写入是缓存在每个处理器中的，只有在必要时才刷回内存。甚至刷回内存的顺序都可能与goroutine的写入顺序不一致。像通道通信或互斥操作这样的同步原语都会导致处理器把积累的写操作刷回内存并提交，所以这个时刻之前goroutine的执行结果就保证了对运行在其他处理器的goroutine可见。
+ 
+考虑如下代码：
+```
+var x, y int
+go func() {
+    x = 1                       //A1
+    fmt.Print("y:", y, " ")     //A2
+}()
+go func() {
+    y = 1                       //B2
+    fmt.Print("x:", x, " ")     //B2
+}()
+```
+可能的输出结果有六种*（不是四种！）*：
+```
+y:0 x:1
+x:0 y:1
+x:1 y:1
+y:1 x:1
+x:0 y:0
+y:0 x:0
+```
+后两种在特定的编译器、CPU或者其他情况下确实有可能发生。
+> 在单个goroutine内，每个语句的效果保证按照执行的顺序发生，即**goroutine是串行一致的（sequentially consistent）**。但在缺乏使用通道或者互斥量来显式同步的情况下，并不能保证所有的goroutine看到的事件顺序是一致的。goroutine的写入操作对于其他goroutine来说不一定是可见的。
+ 
+> **Java通过Volatile关键字（内存屏障）解决了内存可见性问题。**
+ 
+## 延迟初始化：`sync.Once`
+```
+var icons map[string]image.Image
+ 
+func loadIcons() {
+    icons = map[string]image.Image{
+        "spades.png": loadIcon("Spades.png"),
+        "hearts.png": loadIcon("hearts.png"),
+        "diamonds.png": loadIcon("diamonds.png"),
+        "clubs.png": loadIcon("clubs.png"),
+    }
+}
+//线程不安全
+func Icon(name string) image.Image {
+    if icons == nil {
+        loadIcons()
+    }
+    return icons[name]
+}
+```
+由于指令重排，可能会出现有goroutine看到的icons不为nil但map并未完全初始化的情况，因此除了可能会多次初始化，在初始化过程中goroutine可能会拿到icons未完全初始化的版本。
+**基于读写互斥锁的方案**
+```
+var mu sync.RWMutex
+var icons map[string]image.Image
+ 
+func Icon(name string) image.Image {
+    mu.RLock()
+    if icons != nil {
+        icon := icons[name]
+        mu.RUnlock()
+        return icon
+    }
+    mu.RUnlock()        //不释放锁就没办法升级锁
+ 
+    mu.Lock()
+    if icons == nil {   //检查获取锁之前是否被初始化过了
+        loadIcons()
+    }
+    icon := icons[name]
+    mu.Unlock()
+    return icon
+}
+```
+以上代码线程安全，但是更复杂并且更容易出错。
+**sync.Once**
+```
+var loadIconOnce sync.Once
+var icons map[string]image.Image
+ 
+func Icon(name string) image.Image {
+    loadIconsOnce.Do(loadIcons)
+    return icons[name]
+}
+```
+Once包含一个布尔变量和一个互斥量，布尔变量记录初始化是否已经完成，互斥量则负责保护这个布尔变量和客户端的数据结构。Once的唯一方法Do以初始化函数作为参数。
+ 
+## 竞态检测器
+go build、go run、go test可以加上-race参数 
+ 
+## 示例：并发缓存 
+- 基于互斥锁 
+```
+package memo4
+ 
+import "sync"
+ 
+type result struct {
+    value   interface{}
+    err     error
+}
+ 
+type entry struct {
+    res     result
+    ready   chan struct{}
+}
+ 
+type Memo struct {
+    f       Func
+    mu      sync.Mutex
+    cache   map[string]*entry
+}
+ 
+type Func func(key string) (interface{}, error)
+ 
+func New(f Func) *Memo {
+    return &Memo{f: f, cache: make(map[string]*entry)}
+}
+ 
+func (memo *Memo) Get(key string) (value interface{}, err error) {
+    memo.mu.Lock()              //对map的写入需要互斥
+    e := memo.cache[key]
+    if e == nil {
+        //对该key的第一次访问，由第一个到达的goroutine负责执行慢函数
+        //为防止重复执行慢函数，先使用一个entry进行占坑
+        e = &entry{ready: make(chan struct{})}
+        memo.cache[key] = e
+        memo.mu.Unlock()
+ 
+        e.res.value, e.res.err = memo.f(key)
+        close(e.ready)          //利用通道关闭进行广播
+    } else {
+        memo.mu.Unlock()
+ 
+        <-e.ready
+    }
+ 
+    return e.res.value, e.res.err
+}
+```
+- 基于监视goroutine 
+```
+package memo5
+ 
+type result struct {
+    value   interface{}
+    err     error
+}
+ 
+type entry struct {
+    res     result
+    ready   chan struct{}
+}
+ 
+type Func func(key string) (interface{}, error)
+ 
+type request struct {
+    key         string
+    response    chan<- result
+}
+ 
+type Memo struct {
+    requests chan request
+}
+ 
+func New(f Func) *Memo {
+    memo := &Memo{requests: make(chan request)}
+    go memo.server(f)
+    return memo
+}
+ 
+func (memo *Memo) Get(key string) (interface{}, error) {
+    response := make(chan result)
+    memo.requests <- request{key, response}
+    res := <-response
+    return res.value, res.err
+}
+ 
+func (memo *Memo) Close() {
+    close(memo.requests)
+}
+ 
+func (memo *Memo) server(f Func) {
+    cache := make(map[string]*entry)
+    for req := range memo.requests {
+        e := cache[req.key]
+        if e == nil {
+            e = &entry{ready: make(chan struct{})}
+            cache[req.key] = e
+            go e.call(f, req.key)           //相当于异步调用
+        }
+        go e.deliver(req.response)          //另开一个goroutine等待执行结果
+    }
+}
+ 
+func (e *entry) call(f Func, key string) {
+    e.res.value, e.res.err = f(key)
+    close(e.ready)
+}
+ 
+func (e *entry) deliver(response chan<- result) {
+    <-e.ready           //对于命中缓存的请求，e.ready已经关闭了
+    response <- e.res
+}
+```
+ 
+## goroutine与线程 
+**可增长的栈** 
+每个OS线程都有一个固定大小的**栈内存**（通常为2MB），对于goroutine可能在程序中一次创建十万量级个数的goroutine，对于大多数的goroutine这2MB的栈太大了，而对于复杂和深度递归的函数，2MB的栈又太小。 
+在Go中一个goroutine的生命周期开始时只有一个很小的栈（2KB），与OS的栈不同，goroutine的栈可以按需增大和缩小，最大可以达到1GB。 
+ 
+**goroutine调度** 
+OS线程由OS内核来调度。每隔几毫秒，一个硬件时钟中断发送到CPU，CPU调用一个叫**调度器**的内核函数。这个函数暂停当前正在运行的线程，把它的寄存器信息保存到内存，查看线程列表并决定接下来运行哪一个线程，再从内存恢复线程的注册表信息，最后继续执行选中的线程。因为OS线程由内核来调度，所以控制权限从一个线程到另一个线程需要一个完整的**上下文切换（context switch）**：即保存一个线程的状态到内存，再恢复另外一个线程的状态，最后跟新调度器的数据结构。 
+> 考虑这个操作涉及的内存局限性以及涉及的内存访问数量，还有访问内存所需的CPU周期数的增加，这个操作其实是很慢的。 
+ 
+Go运行时包含一个自己的调度器，这个调度器使用一个称为**m:n调度**的技术（它可以复用m个goroutine到n个OS线程）。Go调度器与内核调度器的工作类似，但只需关心单个Go程序的goroutine调度问题。**Go调度器不是由硬件时钟来定期触发的，而是由特定的Go语言结构来触发的。比如当一个goroutine调用time.Sleep或被通道阻塞或对互斥量操作时，调度器就会将这个goroutine设为休眠模式，并运行其他goroutine直到前一个可重新唤醒为止。**
+> 因为不需要切换到内核语境，所以调用一个goroutine比调度一个线程成本低很多。 
+ 
+**GOMAXPROCS** 
+Go调度器使用**GOMAXPROCS**参数确定需要使用多少个OS线程来同时执行Go代码。默认时机器上的CPU数量。正在休眠或者正被通道阻塞的goroutine不需要占用线程。阻塞在I/O和其他系统调用中或调用非Go语言写的函数的goroutine需要一个独立的OS线程，但这个线程不计入**GOMAXPROCS**。 
+ 
+可以通过**GOMAXPROCS**环境变量或者`runtime.GOMAXPROCS`显式控制这个参数。 
+ 
+**goroutine没有标识** 
+在大部分支持多线程的操作系统和编程语言里，当前线程都有一个独特的标识，它通常可以取一个整数或者指针。这个特性可以轻松构建一个**线程的局部存储**，它本质上就是一个全局的map，以线程的标识作为键，这样每个线程都可以独立地用这个map存储和获取值，而不受其他线程干扰（线程级别的全局变量）。 
+ 
+goroutine没有可供程序员访问的标识。 

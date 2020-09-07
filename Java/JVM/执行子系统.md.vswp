@@ -1,0 +1,144 @@
+vnote_backup_file_826537664 C:/Users/1oveACat/OneDrive/笔记/计算机/Java/JVM/执行子系统.md
+[TOC]
+
+
+
+# 执行子系统
+## 类加载
+### 类加载时机
+**类的生命周期**：
+![类生命周期](https://image.loveacat.xyz/images/2019/04/07/Snipaste_2019-04-04_10-42-37.png)
+
+> 对于何时加载类，虚拟机规范并没有强制约束。
+
+**虚拟机规范对*类初始化*的约束：**
+1. 遇到new、getstatic、putstatic、invokestatic这4条字节码指令时，如果没有初始化过，则触发初始化
+2. 使用`java.lang.reflect`包的方法对类进行反射调用的时候，如果没有初始化过，则触发初始化
+3. 初始化一个类时，如果其父类还没有初始化，则先进行父类的初始化
+4. 当虚拟机启动时，虚拟机会先初始化主类（包含main方法的类）
+5. 当使用JDK 1.7的动态语言支持时，如果一个`java.lang.invoke.MethodHandle`实例最后的解析结果（`REF_getStatic、REF_putStatic、REF_invokeStatic`）的方法句柄所对应的类没有初始化，则触发该类的初始化
+
+有且仅有以上的五种情况称为对一个类进行**主动引用**，需要立即初始化类；除此之外，所有引用类的方式都不会触发初始化，称为**被动引用**。
+
+> **被动引用**的例子：
+- 对于**静态字段**只有直接定义这个字段的类会进行初始化，并不会触发子类的初始化。
+- 通过数组定义来引用类，不会触发类的初始化。
+定义数组时虚拟机会生成该类对应的*数组类*，并封装好对数组访问的方法，因此在访问越界时可以抛出`java.lang.ArrayIndexOutOfBoundsException`。
+- 常量在编译阶段会存入常量池中，本质上没有直接引用定义常量的类，因此不会触发类的初始化。
+编译时会通过**常量传播优化**，将类A中的常量添加到类B的常量池中
+
+**接口的初始化：**
+接口的初始化与类的初始化不同，接口初始化时不会要求初始化其父接口。
+
+---
+
+### 类加载过程
+#### 1、加载
+1. 通过一个类的全限定名获取定义此类的二进制字节流
+2. 将这个字节流所代表的静态存储结构转化为方法区的运行时数据结构
+3. 在内存中生成代表这个类的`java.lang.Class`对象，作为方法区这个类的各种数据的访问入口
+
+**数组类本身不通过类加载器加载，而是通过JVM直接创建**
+
+#### 2、验证
+确保Class文件的字节流中包含的信息符合当前虚拟机的要求，并且不会危害虚拟机自身的安全。
+
+**四个阶段：**
+- 文件格式验证
+- 元数据验证
+- 字节码验证
+- 符号引用验证
+
+#### 3、准备
+为类变量分配内存并设置类变量（static）初始值的阶段，这些变量使用的内存都将在方法区分配。
+
+一般的static变量会被初始化为零值，但具有`ConstantValue`属性的变量会被初始化为`ConstantValue`属性所指定的值。
+
+#### 4、解析
+将常量池内的符号引用替换为直接引用的过程
+
+#### 5、初始化
+真正开始执行类中定义的代码，是执行类构造器`<clinit>()`方法的过程。
+- `<clinit>()`方法是编译器自动收集类中的所有变量的赋值动作和静态语句块中的语句合并产生的，语句的顺序和源文件中的顺序相同。静态语句块只能访问它之前定义的变量，之后的变量只能赋值，不能访问。
+- `<clinit>()`方法与实例构造器不同，虚拟机会保证父类的`<clinit>()`方法在子类之前调用。
+- `<clinit>()`方法不是必须的，如果一个类没有静态语句块，编译器可以不为其生成`<clinit>()`方法。
+- 接口中不能有静态语句块，但是会有静态变量，所以编译器会为其生成`<clinit>()`方法，并且父接口的`<clinit>()`方法不需要先执行。
+- 虚拟机会保证一个类的`<clinit>()`方法在多线程环境下被正确的加锁、同步，如果执行时间过长会造成多个线程阻塞。
+
+---
+
+### 类加载器
+通过一个类的全限定名来获取描述此类的二进制字节流。
+类的唯一性由**类加载器**和**类**共同确定。比较两个类是否“相等”需要在这两个类是由同一个类加载器加载的前提下才有意义。
+
+两种加载器（对于JVM来说）：
+- 启动类加载器（Bootstrap ClassLoader）
+使用C++实现，是虚拟机的一部分
+- 所有其他类加载器
+使用Java实现，全部继承自`java.lang.ClassLoader`
+
+三种加载器（对于开发人员）：
+- 启动类加载器（Bootstrap ClassLoader）
+负责加载存放在`<JAVA_HOME>\lib`目录下或被`-Xbootclasspath`参数指定的路径中的，并被虚拟机识别的（仅按照文件名识别，如`rt.jar`，名字不符的不会被加载）类库加载到虚拟机内存中。
+- 扩展类加载器（Extension ClassLoader）
+由`sun.misc.Launcher$ExtClassLoader`实现，它负责加载`<JAVA_HOME>\lib\ext`目录下或被`java.ext.dirs`系统变量指定路径下的所有类库，开发者可以直接使用扩展类加载器。
+- 应用程序类加载器（Application ClassLoader）
+由`sun.misc.Launcher$AppClassLoader`实现。是`ClassLoader.getSystemClassLoader()`方法的返回值，一般也称为**系统类加载器**。负责加载用户类路径（ClassPath）上所指定的类库。
+
+![双亲委派模型](https://image.loveacat.xyz/images/2019/04/07/Snipaste_2019-04-04_14-41-51.png)
+
+**双亲委派模型（Parents Delegation Model）**
+除了顶层的启动类加载器之外，所有的类加载器都应当有自己的父加载器。（不使用继承，使用组合实现）
+
+如果一个类加载器收到了类加载的请求，首先将这个请求委派给父加载器尝试加载这个类，当父加载器无法加载这个请求，子加载器才会自己尝试去加载。可以避免Java类库被覆盖的问题，保证加载类的一致性。
+
+
+```
+protected Class<?> loadClass(String name, boolean resolve)
+        throws ClassNotFoundException
+{
+    synchronized (getClassLoadingLock(name)) {
+        // First, check if the class has already been loaded
+        Class<?> c = findLoadedClass(name);
+        if (c == null) {
+            long t0 = System.nanoTime();
+            try {
+                if (parent != null) {
+                    c = parent.loadClass(name, false);
+                } else {
+                    c = findBootstrapClassOrNull(name);
+                }
+            } catch (ClassNotFoundException e) {
+                // ClassNotFoundException thrown if class not found
+                // from the non-null parent class loader
+            }
+
+            if (c == null) {
+                // If still not found, then invoke findClass in order
+                // to find the class.
+                long t1 = System.nanoTime();
+                c = findClass(name);
+
+                // this is the defining class loader; record the stats
+                sun.misc.PerfCounter.getParentDelegationTime().addTime(t1 - t0);
+                 sun.misc.PerfCounter.getFindClassTime().addElapsedTimeFrom(t1);
+                sun.misc.PerfCounter.getFindClasses().increment();
+            }
+        }
+        if (resolve) {
+            resolveClass(c);
+        }
+        return c;
+    }
+}
+```
+
+> 不提倡覆盖`loadClass()`方法，应该自己实现`findClass()`方法。
+
+**其他类加载模型：**
+- 自定义加载顺序
+自定义的`ClassLoader`可以不遵从“双亲委派”，但是以“java”开头的类也不能被自定义类加载器加载。
+- 网状加载顺序
+在OSGI框架中，类加载器之间的关系是一个网，每个OSGI模块有一个类加载器，不同模块之间可能有依赖关系，在一个模块加载一个类时，可能是从自己模块加载，也可能是委派给其他模块的类加载器加载。
+- 父加载器委派给子加载器加载
+JNDI服务(Java Naming and Directory Interface)
